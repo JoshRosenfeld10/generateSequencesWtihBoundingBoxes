@@ -3,7 +3,6 @@ import os
 from typing import Annotated, Optional
 
 
-
 import slicer
 import scipy
 import cv2
@@ -30,6 +29,7 @@ import vtk
 # generateSequencesWithBoundingBoxes
 #
 
+
 class generateSequencesWithBoundingBoxes(ScriptedLoadableModule):
     """Uses ScriptedLoadableModule base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
@@ -40,19 +40,16 @@ class generateSequencesWithBoundingBoxes(ScriptedLoadableModule):
         self.parent.title = "Generate Sequences with Bounding Boxes"
         self.parent.categories = ["Sequence Utilities"]
         self.parent.dependencies = []
-        self.parent.contributors = ["Rebecca Hisey (Queen's University)", "Josh Rosenfeld (Queen's University)"]
+        self.parent.contributors = [
+            "Rebecca Hisey (Queen's University)", "Josh Rosenfeld (Queen's University)"]
         self.parent.helpText = """
 This module converts a collection of images and segmentations into a synchronized sequence and incorporates bounding box annotations.
-"""
-        # TODO: replace with organization, grant and thanks
-        self.parent.acknowledgementText = """
-This file was originally developed by Jean-Christophe Fillion-Robin, Kitware Inc., Andras Lasso, PerkLab,
-and Steve Pieper, Isomics, Inc. and was partially funded by NIH grant 3P41RR013218-12S1.
 """
 
 #
 # generateSequencesParameterNode
 #
+
 
 @parameterNodeWrapper
 class generateSequencesWithBoundingBoxesParameterNode:
@@ -64,16 +61,14 @@ class generateSequencesWithBoundingBoxesParameterNode:
 #
 
 class generateSequencesWithBoundingBoxesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
-    """Uses ScriptedLoadableModuleWidget base class, available at:
-    https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
-    """
 
     def __init__(self, parent=None) -> None:
         """
         Called when the user opens the module the first time and the widget is initialized.
         """
         ScriptedLoadableModuleWidget.__init__(self, parent)
-        VTKObservationMixin.__init__(self)  # needed for parameter node observation
+        # needed for parameter node observation
+        VTKObservationMixin.__init__(self)
         self.logic = None
         self._parameterNode = None
         self._parameterNodeGuiTag = None
@@ -86,7 +81,8 @@ class generateSequencesWithBoundingBoxesWidget(ScriptedLoadableModuleWidget, VTK
 
         # Load widget from .ui file (created by Qt Designer).
         # Additional widgets can be instantiated manually and added to self.layout.
-        uiWidget = slicer.util.loadUI(self.resourcePath('UI/generateSequencesWithBoundingBoxes.ui'))
+        uiWidget = slicer.util.loadUI(self.resourcePath(
+            'UI/generateSequencesWithBoundingBoxes.ui'))
         self.layout.addWidget(uiWidget)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
 
@@ -102,11 +98,14 @@ class generateSequencesWithBoundingBoxesWidget(ScriptedLoadableModuleWidget, VTK
         # Connections
 
         # These connections ensure that we update parameter node when scene is closed
-        self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
-        self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
+        self.addObserver(
+            slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
+        self.addObserver(slicer.mrmlScene,
+                         slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
 
         # Buttons
-        self.ui.generateSequenceButton.connect('clicked(bool)', self.onGenerateSequenceButton)
+        self.ui.generateSequenceButton.connect(
+            'clicked(bool)', self.onGenerateSequenceButton)
 
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
@@ -177,15 +176,8 @@ class generateSequencesWithBoundingBoxesWidget(ScriptedLoadableModuleWidget, VTK
 # generateSequencesWithBoundingBoxesLogic
 #
 
+
 class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
-    """This class should implement all the actual
-    computation done by your module.  The interface
-    should be such that other python code can import
-    this class and make use of the functionality without
-    requiring an instance of the Widget.
-    Uses ScriptedLoadableModuleLogic base class, available at:
-    https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
-    """
 
     def __init__(self) -> None:
         """
@@ -215,15 +207,18 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         self.markupsNode.SetAndObserveDisplayNodeID(displayNode.GetID())
 
     def createSequenceBrowser(self):
-        seqBrow = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSequenceBrowserNode")
+        seqBrow = slicer.mrmlScene.AddNewNodeByClass(
+            "vtkMRMLSequenceBrowserNode")
         seqBrow.SetName("SequenceBrowser")
         seqBrow.SetAndObserveMasterSequenceNodeID(self.imageSequence.GetID())
         seqBrow.AddSynchronizedSequenceNode(self.markupsSequence)
 
-    def loadImageVolume(self,img_filepath,timeRecorded):
-        imageVol = slicer.util.loadVolume(img_filepath,properties={"singleFile":True})
-        self.imageNode.CopyContent(imageVol,True)
-        self.imageSequence.SetDataNodeAtValue(self.imageNode, str(timeRecorded))
+    def loadImageVolume(self, img_filepath, timeRecorded):
+        imageVol = slicer.util.loadVolume(
+            img_filepath, properties={"singleFile": True})
+        self.imageNode.CopyContent(imageVol, True)
+        self.imageSequence.SetDataNodeAtValue(
+            self.imageNode, str(timeRecorded))
         slicer.mrmlScene.RemoveNode(imageVol)
 
     def clearAllSegments(self):
@@ -232,83 +227,68 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
     def loadBoundingBoxes(self, boundingBoxes, timeRecorded):
         # Set position of 4 markup points within markupsNode to US bbox coords
         self.markupsNode
-        self.segmentationSequence.SetDataNodeAtValue(self.markupsNode, str(timeRecorded))
+        self.segmentationSequence.SetDataNodeAtValue(
+            self.markupsNode, str(timeRecorded))
 
     def getRecordingSlider(self):
         mainWindow = slicer.util.mainWindow()
-        sequenceSeekWidget = mainWindow.findChildren("qMRMLSequenceBrowserSeekWidget")[0]
+        sequenceSeekWidget = mainWindow.findChildren(
+            "qMRMLSequenceBrowserSeekWidget")[0]
         self.sequenceSlider = sequenceSeekWidget.findChildren("QSlider")[0]
         '''if self.sequenceObserver is None:
             self.sequenceSlider.connect("valueChanged(int)",self.selectFirstSegment)'''
 
     def selectFirstSegment(self):
         mainWindow = slicer.util.mainWindow()
-        segmentEditorWidget = mainWindow.findChildren("qMRMLSegmentEditorWidget")[0]
+        segmentEditorWidget = mainWindow.findChildren(
+            "qMRMLSegmentEditorWidget")[0]
         currentSegmentIDs = self.markupsNode.GetSegmentation().GetSegmentIDs()
         print(currentSegmentIDs)
         segmentEditorWidget.setCurrentSegmentID(currentSegmentIDs[0])
 
-    def updateSequence(self,caller,eventid):
+    def updateSequence(self, caller, eventid):
         self.getRecordingSlider()
         timeLabel = self.sequenceSlider.value
         timeRecorded = self.segmentationSequence.GetNthIndexValue(timeLabel)
-        self.segmentationSequence.SetDataNodeAtValue(self.markupsNode, timeRecorded)
+        self.segmentationSequence.SetDataNodeAtValue(
+            self.markupsNode, timeRecorded)
         # self.saveUpdatedImage()
 
-    # def filterMask(self,mask):
-    #     mask = scipy.signal.medfilt2d(mask, 7)
-    #     # thresh = cv2.threshold(mask,0,255,cv2.THRESH_BINARY)[1]
-    #     numlabels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask.astype("uint8"), 8, cv2.CV_32S)
-    #     sizes = stats[:, -1]
-    #     largest_segment = numpy.argmax(sizes[1:])
-    #     newMask = numpy.where(labels == largest_segment + 1, 1, 0)
-    #     contours, hierarchy = cv2.findContours(newMask.astype("uint8"), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    #     largestContour = None
-    #     largestArea = 0
-    #     for cnt in contours:
-    #         area = cv2.contourArea(cnt)
-    #         if area > largestArea:
-    #             largestContour = cnt
-    #             largestArea = area
-    #     filledMask = numpy.zeros(newMask.shape)
-    #     filledMask = cv2.drawContours(filledMask.astype("uint8"), [largestContour], -1, color=1, thickness=cv2.FILLED)
-    #     '''cv2.imshow("new mask",255*filledMask.astype("uint8"))
-    #     cv2.waitKey(0)'''
-    #     return filledMask
-
-    def generateSequence(self,image_directory):
+    def generateSequence(self, image_directory):
         self.image_directory = image_directory
         self.createImageNode()
         self.createMarkupsNode()
         subtype = os.path.basename(image_directory)
         video_ID = os.path.basename(os.path.dirname(image_directory))
-        labelFilePath = os.path.join(image_directory,"{}_{}_Labels.csv".format(video_ID,subtype))
+        labelFilePath = os.path.join(
+            image_directory, "{}_{}_Labels.csv".format(video_ID, subtype))
         self.labelFile = pandas.read_csv(labelFilePath)
-        self.imageSequence = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSequenceNode")
+        self.imageSequence = slicer.mrmlScene.AddNewNodeByClass(
+            "vtkMRMLSequenceNode")
         self.imageSequence.SetName("ImageSequence")
-        self.markupsSequence = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSequenceNode")
+        self.markupsSequence = slicer.mrmlScene.AddNewNodeByClass(
+            "vtkMRMLSequenceNode")
         self.markupsSequence.SetName("MarkupsSequence")
         self.createSequenceBrowser()
         for i in self.labelFile.index:
             img_filename = self.labelFile["FileName"][i]
             timeRecorded = self.labelFile["Time Recorded"][i]
             bboxes = self.labelFile["Tool bounding box"][i]
-            self.loadImageVolume(os.path.join(image_directory,img_filename),timeRecorded)
-            self.loadBoundingBoxes(os.path.join(image_directory, bboxes), timeRecorded)
+            self.loadImageVolume(os.path.join(
+                image_directory, img_filename), timeRecorded)
+            self.loadBoundingBoxes(os.path.join(
+                image_directory, bboxes), timeRecorded)
 
             # TODO: plot fiducials for each corner of ultra sound bounding box
         # self.clearAllSegments()
         seqBrow = slicer.util.getNode("SequenceBrowser")
-        seqBrow.AddProxyNode(self.imageNode,self.imageSequence)
+        seqBrow.AddProxyNode(self.imageNode, self.imageSequence)
         # self.segmentationNode = slicer.util.getFirstNodeByClassByName("vtkMRMLSegmentationNode","SegmentationSequence")
-        self.imageNode = slicer.util.getFirstNodeByClassByName("vtkMRMLVectorVolumeNode","ImageSequence")
+        self.imageNode = slicer.util.getFirstNodeByClassByName(
+            "vtkMRMLVectorVolumeNode", "ImageSequence")
         # self.segmentation = self.segmentationNode.GetSegmentation()
         # self.segmentObserver = self.segmentation.AddObserver(self.segmentation.SegmentModified,self.updateSequence)
         # self.segmentationObserver = self.segmentation.AddObserver(self.segmentation.RepresentationModified, self.updateSequence)
-
-
-
-
 
 
 #
