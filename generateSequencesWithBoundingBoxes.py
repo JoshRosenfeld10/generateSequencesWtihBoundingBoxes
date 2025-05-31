@@ -15,6 +15,7 @@ from slicer.parameterNodeWrapper import (
 import numpy
 
 from slicer import vtkMRMLScalarVolumeNode
+from slicer import vtkMRMLMarkupsFiducialNode
 try:
     import pandas
 except ModuleNotFoundError:
@@ -184,7 +185,6 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         Called when the logic class is instantiated. Can be used for initializing member variables.
         """
         ScriptedLoadableModuleLogic.__init__(self)
-        self.segLogic = slicer.modules.segmentations.logic()
         self.sequenceObserver = None
 
     def getParameterNode(self):
@@ -199,17 +199,19 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         self.imageNode.SetAndObserveDisplayNodeID(displayNode.GetID())
 
     def createMarkupsNode(self):
-        self.markupsNode = slicer.vtkMRMLMarkupsFiducialNode()
-        self.markupsNode.SetName('Markups')
-        slicer.mrmlScene.AddNode(self.markupsNode)
-        displayNode = slicer.vtkMRMLMarkupsFiducialDisplayNode()
-        slicer.mrmlScene.AddNode(displayNode)
-        self.markupsNode.SetAndObserveDisplayNodeID(displayNode.GetID())
+        self.markupsNode = slicer.mrmlScene.AddNewNodeByClass(
+            "vtkMRMLMarkupsFiducialNode", "Ultrasound Markups"
+        )
+
+        # Initialize 4 control points for ultrasound bounding box
+        for i in range(4):
+            self.markupsNode.AddControlPoint(0.0, 0.0, 0.0)
+
+        self.markupsNode.GetDisplayNode().SetVisibility(False)
+
 
     def createSequenceBrowser(self):
-        seqBrow = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLSequenceBrowserNode")
-        seqBrow.SetName("SequenceBrowser")
+        seqBrow = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSequenceBrowserNode", "SequenceBrowser")
         seqBrow.SetAndObserveMasterSequenceNodeID(self.imageSequence.GetID())
         seqBrow.AddSynchronizedSequenceNode(self.markupsSequence)
 
@@ -221,74 +223,78 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
             self.imageNode, str(timeRecorded))
         slicer.mrmlScene.RemoveNode(imageVol)
 
-    def clearAllSegments(self):
-        self.markupsNode.GetSegmentation().RemoveAllSegments()
-
     def loadBoundingBoxes(self, boundingBoxes, timeRecorded):
-        # Set position of 4 markup points within markupsNode to US bbox coords
-        self.markupsNode
-        self.segmentationSequence.SetDataNodeAtValue(
+        boundingBoxes = self.formatBoundingBoxData(boundingBoxes)  # format bounding box data
+
+        # Set position of US bounding box
+        if 'ultrasound' in boundingBoxes:
+            ultrasoundBoundingBox = boundingBoxes['ultrasound']
+            self.markupsNode.SetNthControlPointPosition(0, ultrasoundBoundingBox[0][0], ultrasoundBoundingBox[0][1], 0)  # top left
+            self.markupsNode.SetNthControlPointPosition(1, ultrasoundBoundingBox[1][0], ultrasoundBoundingBox[1][1], 0)  # top right
+            self.markupsNode.SetNthControlPointPosition(2, ultrasoundBoundingBox[2][0], ultrasoundBoundingBox[2][1], 0)  # bottom left
+            self.markupsNode.SetNthControlPointPosition(3, ultrasoundBoundingBox[3][0], ultrasoundBoundingBox[3][1], 0)  # bottom right
+
+        # Save position of markups at specific time
+        self.markupsSequence.SetDataNodeAtValue(
             self.markupsNode, str(timeRecorded))
 
-    def getRecordingSlider(self):
-        mainWindow = slicer.util.mainWindow()
-        sequenceSeekWidget = mainWindow.findChildren(
-            "qMRMLSequenceBrowserSeekWidget")[0]
-        self.sequenceSlider = sequenceSeekWidget.findChildren("QSlider")[0]
-        '''if self.sequenceObserver is None:
-            self.sequenceSlider.connect("valueChanged(int)",self.selectFirstSegment)'''
+    def formatBoundingBoxData(self, rawBoundingBoxes):
+        rawBoundingBoxes = eval(rawBoundingBoxes)  # evaluate string to convert to list of dictionaries
+        formattedBoundingBoxes = {}
 
-    def selectFirstSegment(self):
-        mainWindow = slicer.util.mainWindow()
-        segmentEditorWidget = mainWindow.findChildren(
-            "qMRMLSegmentEditorWidget")[0]
-        currentSegmentIDs = self.markupsNode.GetSegmentation().GetSegmentIDs()
-        print(currentSegmentIDs)
-        segmentEditorWidget.setCurrentSegmentID(currentSegmentIDs[0])
+        for label in rawBoundingBoxes:
+            formattedBoundingBoxes[label['class']] = [
+                (label['xmin'] * -1, label['ymax'] * -1),  # top left
+                (label['xmax'] * -1, label['ymax'] * -1),  # top right
+                (label['xmin'] * -1, label['ymin'] * -1),  # bottom left
+                (label['xmax'] * -1, label['ymin'] * -1),  # bottom right
+            ]
 
-    def updateSequence(self, caller, eventid):
-        self.getRecordingSlider()
-        timeLabel = self.sequenceSlider.value
-        timeRecorded = self.segmentationSequence.GetNthIndexValue(timeLabel)
-        self.segmentationSequence.SetDataNodeAtValue(
-            self.markupsNode, timeRecorded)
-        # self.saveUpdatedImage()
+        return formattedBoundingBoxes
 
     def generateSequence(self, image_directory):
         self.image_directory = image_directory
+
+        # Create image and markups nodes
         self.createImageNode()
         self.createMarkupsNode()
+
+        # Format paths
         subtype = os.path.basename(image_directory)
         video_ID = os.path.basename(os.path.dirname(image_directory))
         labelFilePath = os.path.join(
             image_directory, "{}_{}_Labels.csv".format(video_ID, subtype))
+
+        # Read label file from csv
         self.labelFile = pandas.read_csv(labelFilePath)
+
+        # Create sequences nodes
         self.imageSequence = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLSequenceNode")
-        self.imageSequence.SetName("ImageSequence")
+            "vtkMRMLSequenceNode", "ImageSequence")
         self.markupsSequence = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLSequenceNode")
-        self.markupsSequence.SetName("MarkupsSequence")
+            "vtkMRMLSequenceNode", "MarkupsSequence")
         self.createSequenceBrowser()
+
+        # Loop through each frame
         for i in self.labelFile.index:
+
+            # Retrieve data from each frame
             img_filename = self.labelFile["FileName"][i]
             timeRecorded = self.labelFile["Time Recorded"][i]
             bboxes = self.labelFile["Tool bounding box"][i]
+
+            # Load image
             self.loadImageVolume(os.path.join(
                 image_directory, img_filename), timeRecorded)
-            self.loadBoundingBoxes(os.path.join(
-                image_directory, bboxes), timeRecorded)
 
-            # TODO: plot fiducials for each corner of ultra sound bounding box
-        # self.clearAllSegments()
-        seqBrow = slicer.util.getNode("SequenceBrowser")
-        seqBrow.AddProxyNode(self.imageNode, self.imageSequence)
-        # self.segmentationNode = slicer.util.getFirstNodeByClassByName("vtkMRMLSegmentationNode","SegmentationSequence")
-        self.imageNode = slicer.util.getFirstNodeByClassByName(
-            "vtkMRMLVectorVolumeNode", "ImageSequence")
-        # self.segmentation = self.segmentationNode.GetSegmentation()
-        # self.segmentObserver = self.segmentation.AddObserver(self.segmentation.SegmentModified,self.updateSequence)
-        # self.segmentationObserver = self.segmentation.AddObserver(self.segmentation.RepresentationModified, self.updateSequence)
+            # Load bounding box data
+            self.loadBoundingBoxes(bboxes, timeRecorded)
+
+        # seqBrow = slicer.util.getNode("SequenceBrowser")
+        # markupsProxy = seqBrow.GetProxyNode(self.markupsSequence)
+        # disp = markupsProxy.GetDisplayNode()
+        # disp.SetVisibility(True)
+        # disp.SetSliceProjection(True)
 
 
 #
