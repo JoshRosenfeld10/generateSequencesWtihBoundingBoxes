@@ -186,6 +186,8 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         """
         ScriptedLoadableModuleLogic.__init__(self)
         self.sequenceObserver = None
+        self.markupNodes = []  # list of markup nodes (one for each bounding box)
+        self.markupSequences = []
 
     def getParameterNode(self):
         return generateSequencesWithBoundingBoxesParameterNode(super().getParameterNode())
@@ -198,22 +200,30 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         slicer.mrmlScene.AddNode(displayNode)
         self.imageNode.SetAndObserveDisplayNodeID(displayNode.GetID())
 
-    def createMarkupsNode(self):
-        self.markupsNode = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLMarkupsFiducialNode", "Ultrasound Markups"
-        )
+    def addMarkupNodeWithSequence(self, classname: str) -> None:
+        # Create markup node
+        self.markupNodes.append(slicer.mrmlScene.AddNewNodeByClass(
+            "vtkMRMLMarkupsFiducialNode", f"{classname.upper()} Markups"
+        ))
 
-        # Initialize 4 control points for ultrasound bounding box
+        # Initialize 4 control points for bounding box
         for i in range(4):
-            self.markupsNode.AddControlPoint(0.0, 0.0, 0.0)
+            self.markupNodes[-1].AddControlPoint(0.0, 0.0, 0.0)
 
-        self.markupsNode.GetDisplayNode().SetVisibility(False)
+        # Hide markups (will be visible through sequence markups)
+        self.markupNodes[-1].GetDisplayNode().SetVisibility(False)
+
+        # Create sequence node for markups
+        self.markupSequences.append(slicer.mrmlScene.AddNewNodeByClass(
+            "vtkMRMLSequenceNode", f"{classname.upper()} Markups Sequence"
+        ))
 
 
     def createSequenceBrowser(self):
         seqBrow = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSequenceBrowserNode", "SequenceBrowser")
         seqBrow.SetAndObserveMasterSequenceNodeID(self.imageSequence.GetID())
-        seqBrow.AddSynchronizedSequenceNode(self.markupsSequence)
+        for markupsSequence in self.markupSequences:
+            seqBrow.AddSynchronizedSequenceNode(markupsSequence)
 
     def loadImageVolume(self, img_filepath, timeRecorded):
         imageVol = slicer.util.loadVolume(
@@ -226,17 +236,45 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
     def loadBoundingBoxes(self, boundingBoxes, timeRecorded):
         boundingBoxes = self.formatBoundingBoxData(boundingBoxes)  # format bounding box data
 
-        # Set position of US bounding box
-        if 'ultrasound' in boundingBoxes:
-            ultrasoundBoundingBox = boundingBoxes['ultrasound']
-            self.markupsNode.SetNthControlPointPosition(0, ultrasoundBoundingBox[0][0], ultrasoundBoundingBox[0][1], 0)  # top left
-            self.markupsNode.SetNthControlPointPosition(1, ultrasoundBoundingBox[1][0], ultrasoundBoundingBox[1][1], 0)  # top right
-            self.markupsNode.SetNthControlPointPosition(2, ultrasoundBoundingBox[2][0], ultrasoundBoundingBox[2][1], 0)  # bottom left
-            self.markupsNode.SetNthControlPointPosition(3, ultrasoundBoundingBox[3][0], ultrasoundBoundingBox[3][1], 0)  # bottom right
+        # Loop through all markup nodes
+        for i, markupNode in enumerate(self.markupNodes):
+            classname = markupNode.GetName().split()[0].lower()
 
-        # Save position of markups at specific time
-        self.markupsSequence.SetDataNodeAtValue(
-            self.markupsNode, str(timeRecorded))
+            # If annotation exists for a given tool in the given frame, place markups in corresponding position of bounding box
+            if classname in boundingBoxes:
+                boundingBox = boundingBoxes[classname]
+                markupNode.SetNthControlPointPosition(0, boundingBox[0][0], boundingBox[0][1], 0)  # bottom left
+                markupNode.SetNthControlPointPosition(1, boundingBox[1][0], boundingBox[1][1], 0)  # bottom right
+                markupNode.SetNthControlPointPosition(2, boundingBox[2][0], boundingBox[2][1], 0)  # top left
+                markupNode.SetNthControlPointPosition(3, boundingBox[3][0], boundingBox[3][1], 0)  # top right
+
+                # Save position of markups at specific time in corresponding markups sequence
+                self.markupSequences[i].SetDataNodeAtValue(
+                    markupNode, str(timeRecorded))
+
+            # If annotation does not exist for a given tool in the given frame, place markups at (0.0,0.0,0.0)
+            else:
+                bottomleft = [0.0,0.0,0.0]
+                bottomright = [0.0,0.0,0.0]
+                topleft = [0.0,0.0,0.0]
+                topright = [0.0,0.0,0.0]
+
+                markupNode.GetNthControlPointPosition(0, bottomleft)  # bottom left
+                markupNode.GetNthControlPointPosition(1, bottomright)  # bottom right
+                markupNode.GetNthControlPointPosition(2, topleft)  # top left
+                markupNode.GetNthControlPointPosition(3, topleft)  # top right
+
+                # Only set position to (0.0, 0.0, 0.0) if markups aren't already there
+                if bottomleft != [0.0, 0.0, 0.0] or bottomright != [0.0, 0.0, 0.0] or topleft != [0.0, 0.0, 0.0] or topright != [0.0, 0.0, 0.0]:
+                    markupNode.SetNthControlPointPosition(0, 0.0, 0.0, 0.0)  # bottom left
+                    markupNode.SetNthControlPointPosition(1, 0.0, 0.0, 0.0)  # bottom right
+                    markupNode.SetNthControlPointPosition(2, 0.0, 0.0, 0.0)  # top left
+                    markupNode.SetNthControlPointPosition(3, 0.0, 0.0, 0.0)  # top right
+
+                    # Save position of markups at specific time in corresponding markups sequence
+                    self.markupSequences[i].SetDataNodeAtValue(
+                        markupNode, str(timeRecorded))
+
 
     def formatBoundingBoxData(self, rawBoundingBoxes):
         rawBoundingBoxes = eval(rawBoundingBoxes)  # evaluate string to convert to list of dictionaries
@@ -244,10 +282,10 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
 
         for label in rawBoundingBoxes:
             formattedBoundingBoxes[label['class']] = [
-                (label['xmin'] * -1, label['ymax'] * -1),  # top left
-                (label['xmax'] * -1, label['ymax'] * -1),  # top right
-                (label['xmin'] * -1, label['ymin'] * -1),  # bottom left
-                (label['xmax'] * -1, label['ymin'] * -1),  # bottom right
+                (label['xmin'] * -1, label['ymax'] * -1),  # bottom left
+                (label['xmax'] * -1, label['ymax'] * -1),  # bottom right
+                (label['xmin'] * -1, label['ymin'] * -1),  # top left
+                (label['xmax'] * -1, label['ymin'] * -1),  # top right
             ]
 
         return formattedBoundingBoxes
@@ -255,9 +293,11 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
     def generateSequence(self, image_directory):
         self.image_directory = image_directory
 
-        # Create image and markups nodes
+        # Create image and markup nodes
         self.createImageNode()
-        self.createMarkupsNode()
+        self.addMarkupNodeWithSequence("ULTRASOUND")
+        self.addMarkupNodeWithSequence("PHANTOM")
+        self.addMarkupNodeWithSequence("SYRINGE")
 
         # Format paths
         subtype = os.path.basename(image_directory)
@@ -271,8 +311,6 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         # Create sequences nodes
         self.imageSequence = slicer.mrmlScene.AddNewNodeByClass(
             "vtkMRMLSequenceNode", "ImageSequence")
-        self.markupsSequence = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLSequenceNode", "MarkupsSequence")
         self.createSequenceBrowser()
 
         # Loop through each frame
@@ -289,12 +327,6 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
 
             # Load bounding box data
             self.loadBoundingBoxes(bboxes, timeRecorded)
-
-        # seqBrow = slicer.util.getNode("SequenceBrowser")
-        # markupsProxy = seqBrow.GetProxyNode(self.markupsSequence)
-        # disp = markupsProxy.GetDisplayNode()
-        # disp.SetVisibility(True)
-        # disp.SetSliceProjection(True)
 
 
 #
