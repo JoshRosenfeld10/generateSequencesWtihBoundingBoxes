@@ -172,7 +172,9 @@ class generateSequencesWithBoundingBoxesWidget(ScriptedLoadableModuleWidget, VTK
             self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
 
     def onGenerateSequenceButton(self) -> None:
-        self.logic.generateSequence(self.ui.imageDirectoryButton.directory)
+        self.logic.generateSequence(self.ui.RGBImageDirectoryButton.directory, self.ui.depthImageDirectoryButton.directory)
+
+
 #
 # generateSequencesWithBoundingBoxesLogic
 #
@@ -187,18 +189,23 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         ScriptedLoadableModuleLogic.__init__(self)
         self.sequenceObserver = None
         self.markupNodes = []  # list of markup nodes (one for each bounding box)
-        self.markupSequences = []
+        self.markupSequences = []  # list of markup sequences (one for each set of markups)
+        self.imageNodes = []  # list of image nodes (one for RGB, one for depth)
+        self.imageSequences = [] # list of image sequences (one for each image node)
 
     def getParameterNode(self):
         return generateSequencesWithBoundingBoxesParameterNode(super().getParameterNode())
 
-    def createImageNode(self):
-        self.imageNode = slicer.vtkMRMLVectorVolumeNode()
-        self.imageNode.SetName('RGB_Image')
-        slicer.mrmlScene.AddNode(self.imageNode)
-        displayNode = slicer.vtkMRMLVectorVolumeDisplayNode()
-        slicer.mrmlScene.AddNode(displayNode)
-        self.imageNode.SetAndObserveDisplayNodeID(displayNode.GetID())
+    def addImageNodeWithSequence(self, classname: str):
+        # Create image node
+        self.imageNodes.append(slicer.mrmlScene.AddNewNodeByClass(
+            "vtkMRMLVectorVolumeNode", f"{classname.upper()} Image"
+        ))
+
+        # Create sequence node for image
+        self.imageSequences.append(slicer.mrmlScene.AddNewNodeByClass(
+            "vtkMRMLSequenceNode", f"{classname.upper()} Image Sequence"
+        ))
 
     def addMarkupNodeWithSequence(self, classname: str) -> None:
         # Create markup node
@@ -207,7 +214,7 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         ))
 
         # Initialize 4 control points for bounding box
-        for i in range(4):
+        for _ in range(4):
             self.markupNodes[-1].AddControlPoint(0.0, 0.0, 0.0)
 
         # Hide markups (will be visible through sequence markups)
@@ -218,19 +225,27 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
             "vtkMRMLSequenceNode", f"{classname.upper()} Markups Sequence"
         ))
 
-
-    def createSequenceBrowser(self):
+    def createSequenceBrowser(self, masterImageSequenceIndex: int) -> None:
+        # Create sequence browser
         seqBrow = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSequenceBrowserNode", "SequenceBrowser")
-        seqBrow.SetAndObserveMasterSequenceNodeID(self.imageSequence.GetID())
+
+        # Set master sequence
+        seqBrow.SetAndObserveMasterSequenceNodeID(self.imageSequences[masterImageSequenceIndex].GetID())
+
+        # Add synchronized sequences
+        for i, imageSequence in enumerate(self.imageSequences):
+            if i != masterImageSequenceIndex: seqBrow.AddSynchronizedSequenceNode(imageSequence)
         for markupsSequence in self.markupSequences:
             seqBrow.AddSynchronizedSequenceNode(markupsSequence)
 
-    def loadImageVolume(self, img_filepath, timeRecorded):
+    def loadImageVolume(self, imageNode, imageSequence, imgFilepath, timeRecorded):
         imageVol = slicer.util.loadVolume(
-            img_filepath, properties={"singleFile": True})
-        self.imageNode.CopyContent(imageVol, True)
-        self.imageSequence.SetDataNodeAtValue(
-            self.imageNode, str(timeRecorded))
+            imgFilepath, properties={"singleFile": True}
+        )
+        imageNode.CopyContent(imageVol, True)
+        imageSequence.SetDataNodeAtValue(
+            imageNode, str(timeRecorded)
+        )
         slicer.mrmlScene.RemoveNode(imageVol)
 
     def loadBoundingBoxes(self, boundingBoxes, timeRecorded):
@@ -290,43 +305,63 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
 
         return formattedBoundingBoxes
 
-    def generateSequence(self, image_directory):
-        self.image_directory = image_directory
+    def getLabelFilePathFromDirectory(self, directory):
+        subtype = os.path.basename(directory)
+        videoId = os.path.basename(os.path.dirname(directory))
+
+        return os.path.join(
+            directory, "{}_{}_Labels.csv".format(videoId, subtype)
+        )
+
+    def generateSequence(self, RGBImageDirectory, depthImageDirectory):
 
         # Create image and markup nodes
-        self.createImageNode()
+        self.addImageNodeWithSequence("RGB")
+        self.addImageNodeWithSequence("DEPTH")
         self.addMarkupNodeWithSequence("ULTRASOUND")
         self.addMarkupNodeWithSequence("PHANTOM")
         self.addMarkupNodeWithSequence("SYRINGE")
 
-        # Format paths
-        subtype = os.path.basename(image_directory)
-        video_ID = os.path.basename(os.path.dirname(image_directory))
-        labelFilePath = os.path.join(
-            image_directory, "{}_{}_Labels.csv".format(video_ID, subtype))
+        # Create sequences node
+        self.createSequenceBrowser(0)
 
         # Read label file from csv
-        self.labelFile = pandas.read_csv(labelFilePath)
+        RGBLabelFile = pandas.read_csv(self.getLabelFilePathFromDirectory(RGBImageDirectory))
+        depthLabelFile = pandas.read_csv(self.getLabelFilePathFromDirectory(depthImageDirectory))
 
-        # Create sequences nodes
-        self.imageSequence = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLSequenceNode", "ImageSequence")
-        self.createSequenceBrowser()
-
-        # Loop through each frame
-        for i in self.labelFile.index:
+        # Loop through each frame of RGB images
+        for i in RGBLabelFile.index:
 
             # Retrieve data from each frame
-            img_filename = self.labelFile["FileName"][i]
-            timeRecorded = self.labelFile["Time Recorded"][i]
-            bboxes = self.labelFile["Tool bounding box"][i]
+            imgFilename = RGBLabelFile["FileName"][i]
+            timeRecorded = RGBLabelFile["Time Recorded"][i]
+            bboxes = RGBLabelFile["Tool bounding box"][i]
 
             # Load image
-            self.loadImageVolume(os.path.join(
-                image_directory, img_filename), timeRecorded)
+            self.loadImageVolume(
+                self.imageNodes[0],
+                self.imageSequences[0],
+                os.path.join(RGBImageDirectory, imgFilename),
+                timeRecorded
+            )
 
             # Load bounding box data
             self.loadBoundingBoxes(bboxes, timeRecorded)
+
+        # Loop through each frame of depth images
+        for i in depthLabelFile.index:
+
+            # Retrieve data from each frame
+            imgFilename = depthLabelFile["FileName"][i]
+            timeRecorded = depthLabelFile["Time Recorded"][i]
+
+            # Load image
+            self.loadImageVolume(
+                self.imageNodes[1],
+                self.imageSequences[1],
+                os.path.join(depthImageDirectory, imgFilename),
+                timeRecorded
+            )
 
 
 #
