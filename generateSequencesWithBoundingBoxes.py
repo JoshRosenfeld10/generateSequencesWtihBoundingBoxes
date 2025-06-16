@@ -172,7 +172,16 @@ class generateSequencesWithBoundingBoxesWidget(ScriptedLoadableModuleWidget, VTK
             self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
 
     def onGenerateSequenceButton(self) -> None:
-        self.logic.generateSequence(self.ui.RGBImageDirectoryButton.directory, self.ui.depthImageDirectoryButton.directory)
+        if self.ui.checkBox.checked:
+            self.logic.generateUsingExistingFile(
+                self.ui.RGBImageDirectoryButton.directory,
+                self.ui.slicerFilePathButton.currentPath
+            )
+        else:
+            self.logic.generateSequence(
+                self.ui.RGBImageDirectoryButton.directory,
+                self.ui.depthImageDirectoryButton.directory
+            )
 
 
 #
@@ -248,8 +257,8 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         )
         slicer.mrmlScene.RemoveNode(imageVol)
 
-    def loadBoundingBoxes(self, boundingBoxes, timeRecorded):
-        boundingBoxes = self.formatBoundingBoxData(boundingBoxes)  # format bounding box data
+    def loadBoundingBoxes(self, boundingBoxes, timeRecorded, fromSequence=True):
+        boundingBoxes = self.formatBoundingBoxData(boundingBoxes, fromSequence)  # format bounding box data
 
         # Loop through all markup nodes
         for i, markupNode in enumerate(self.markupNodes):
@@ -291,7 +300,7 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
                         markupNode, str(timeRecorded))
 
 
-    def formatBoundingBoxData(self, rawBoundingBoxes):
+    def formatBoundingBoxData(self, rawBoundingBoxes, fromSequence: bool):
         rawBoundingBoxes = eval(rawBoundingBoxes)  # evaluate string to convert to list of dictionaries
         formattedBoundingBoxes = {}
 
@@ -301,6 +310,11 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
                 (label['xmax'] * -1, label['ymax'] * -1),  # bottom right
                 (label['xmin'] * -1, label['ymin'] * -1),  # top left
                 (label['xmax'] * -1, label['ymin'] * -1),  # top right
+            ] if fromSequence else [
+                (label['xmin'] * -1, label['ymax']),
+                (label['xmax'] * -1, label['ymax']),
+                (label['xmin'] * -1, label['ymin']),
+                (label['xmax'] * -1, label['ymin']),
             ]
 
         return formattedBoundingBoxes
@@ -346,7 +360,7 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
             )
 
             # Load bounding box data
-            self.loadBoundingBoxes(bboxes, timeRecorded)
+            self.loadBoundingBoxes(bboxes, timeRecorded, True)
 
         # Loop through each frame of depth images
         for i in depthLabelFile.index:
@@ -362,6 +376,33 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
                 os.path.join(depthImageDirectory, imgFilename),
                 timeRecorded
             )
+
+    def generateUsingExistingFile(self, RGBImageDirectory, slicerFileDirectory):
+        # Load slicer scene
+        try:
+            slicer.util.loadNodesFromFile(slicerFileDirectory)
+        except:
+            print("Error loading slicer file.")
+
+        self.addMarkupNodeWithSequence("ULTRASOUND")
+
+        # Get sequence browser (assuming a sequence browser named 'Recording' exists)
+        sequenceBrowser = slicer.mrmlScene.GetFirstNodeByName("Recording")
+        for markupsSequence in self.markupSequences:
+            sequenceBrowser.AddSynchronizedSequenceNode(markupsSequence)
+
+        # Read label file from csv
+        RGBLabelFile = pandas.read_csv(self.getLabelFilePathFromDirectory(RGBImageDirectory))
+
+        # Loop through each frame of RGB images
+        for i in RGBLabelFile.index:
+
+            # Retrieve data from each frame
+            timeRecorded = RGBLabelFile["Time Recorded"][i]
+            bboxes = RGBLabelFile["Tool bounding box"][i]
+
+            # Load bounding box data
+            self.loadBoundingBoxes(bboxes, timeRecorded, False)
 
 
 #
