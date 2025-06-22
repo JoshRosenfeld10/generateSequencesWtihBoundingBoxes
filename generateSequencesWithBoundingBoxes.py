@@ -2,7 +2,7 @@ import logging
 import os
 from typing import Annotated, Optional
 
-
+import numpy as np
 import slicer
 import scipy
 import cv2
@@ -13,6 +13,7 @@ from slicer.parameterNodeWrapper import (
     WithinRange,
 )
 import numpy
+from vtk.util import numpy_support
 
 from slicer import vtkMRMLScalarVolumeNode
 from slicer import vtkMRMLMarkupsFiducialNode
@@ -91,6 +92,8 @@ class generateSequencesWithBoundingBoxesWidget(ScriptedLoadableModuleWidget, VTK
         # "mrmlSceneChanged(vtkMRMLScene*)" signal in is connected to each MRML widget's.
         # "setMRMLScene(vtkMRMLScene*)" slot.
         uiWidget.setMRMLScene(slicer.mrmlScene)
+        self.ui.sequenceBrowserNode.setMRMLScene(slicer.mrmlScene)
+        self.ui.depthImageSequenceNode.setMRMLScene(slicer.mrmlScene)
 
         # Create logic class. Logic implements all computations that should be possible to run
         # in batch mode, without a graphical user interface.
@@ -173,9 +176,10 @@ class generateSequencesWithBoundingBoxesWidget(ScriptedLoadableModuleWidget, VTK
 
     def onGenerateSequenceButton(self) -> None:
         if self.ui.checkBox.checked:
-            self.logic.generateUsingExistingFile(
+            self.logic.generateUsingExistingSequenceBrowser(
                 self.ui.RGBImageDirectoryButton.directory,
-                self.ui.slicerFilePathButton.currentPath
+                self.ui.sequenceBrowserNode.currentNode(),
+                self.ui.depthImageSequenceNode.currentNode()
             )
         else:
             self.logic.generateSequence(
@@ -201,6 +205,8 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         self.markupSequences = []  # list of markup sequences (one for each set of markups)
         self.imageNodes = []  # list of image nodes (one for RGB, one for depth)
         self.imageSequences = [] # list of image sequences (one for each image node)
+        self.sequenceBrowser = None
+        self.depthImageSequenceNode = None
 
     def getParameterNode(self):
         return generateSequencesWithBoundingBoxesParameterNode(super().getParameterNode())
@@ -236,16 +242,16 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
 
     def createSequenceBrowser(self, masterImageSequenceIndex: int) -> None:
         # Create sequence browser
-        seqBrow = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSequenceBrowserNode", "SequenceBrowser")
+        self.sequenceBrowser = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSequenceBrowserNode", "SequenceBrowser")
 
         # Set master sequence
-        seqBrow.SetAndObserveMasterSequenceNodeID(self.imageSequences[masterImageSequenceIndex].GetID())
+        self.sequenceBrowser.SetAndObserveMasterSequenceNodeID(self.imageSequences[masterImageSequenceIndex].GetID())
 
         # Add synchronized sequences
         for i, imageSequence in enumerate(self.imageSequences):
-            if i != masterImageSequenceIndex: seqBrow.AddSynchronizedSequenceNode(imageSequence)
+            if i != masterImageSequenceIndex: self.sequenceBrowser.AddSynchronizedSequenceNode(imageSequence)
         for markupsSequence in self.markupSequences:
-            seqBrow.AddSynchronizedSequenceNode(markupsSequence)
+            self.sequenceBrowser.AddSynchronizedSequenceNode(markupsSequence)
 
     def loadImageVolume(self, imageNode, imageSequence, imgFilepath, timeRecorded):
         imageVol = slicer.util.loadVolume(
@@ -257,6 +263,78 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         )
         slicer.mrmlScene.RemoveNode(imageVol)
 
+    def extractROIPixelsAtTimestamp(self, targetTimestamp, quad):
+        # Find appropriate frame index (<= timestamp)
+        numberOfFrames = self.depthImageSequenceNode.GetNumberOfDataNodes()
+        matchedFrameIndex = None
+
+        for i in range(numberOfFrames):
+            timestampStr = self.depthImageSequenceNode.GetNthIndexValue(i)
+            try:
+                timestamp = float(timestampStr)
+            except ValueError:
+                continue
+
+            if timestamp <= targetTimestamp:
+                matchedFrameIndex = i
+            else:
+                break
+
+        if matchedFrameIndex is None:
+            raise ValueError(f"No frame found with timestamp <= target timestamp {targetTimestamp}")
+
+        # Extract image at closest timestamp
+        self.sequenceBrowser.SetSelectedItemNumber(matchedFrameIndex)
+        frameVolumeNode = self.depthImageSequenceNode.GetDataNodeAtValue(
+            self.depthImageSequenceNode.GetNthIndexValue(matchedFrameIndex)
+        )
+        imageData = frameVolumeNode.GetImageData()
+        dims = imageData.GetDimensions()
+        scalars = imageData.GetPointData().GetScalars()
+        npImage = numpy_support.vtk_to_numpy(scalars).reshape(dims[1], dims[0], -1)  # shape: (rows, cols, channels)
+
+        # Create binary mask from bounding box polygon
+        mask = np.zeros((dims[1], dims[0]), dtype=np.uint8)  # shape: rows, cols
+        cv2.fillPoly(mask, [quad], 1)
+
+        # Return RGB pixel values within mask
+        return npImage[mask == 1]
+
+    def getAverageRGBPixel(self, pixels):
+        return pixels.mean(axis=0).astype(np.uint8)
+
+    def convertRGBToDepth(self, pixel):
+        is_disparity = False
+        min_depth = 0.16
+        max_depth = 300.0
+        min_disparity = 1.0 / max_depth
+        max_disparity = 1.0 / min_depth
+        r_value = float(pixel[0])
+        g_value = float(pixel[1])
+        b_value = float(pixel[2])
+        depthValue = 0
+        hue_value = 0
+        if (b_value + g_value + r_value) < 255:
+            hue_value = 0
+        elif (r_value >= g_value and r_value >= b_value):
+            if (g_value >= b_value):
+                hue_value = g_value - b_value
+            else:
+                hue_value = (g_value - b_value) + 1529
+        elif (g_value >= r_value and g_value >= b_value):
+            hue_value = b_value - r_value + 510
+        elif (b_value >= g_value and b_value >= r_value):
+            hue_value = r_value - g_value + 1020
+
+        if (hue_value > 0):
+            if not is_disparity:
+                z_value = ((min_depth + (max_depth - min_depth) * hue_value / 1529.0) + 0.5)
+                depthValue = z_value
+            else:
+                disp_value = min_disparity + (max_disparity - min_disparity) * hue_value / 1529.0
+                depthValue = ((1.0 / disp_value) / 1000 + 0.5)
+        return depthValue
+
     def loadBoundingBoxes(self, boundingBoxes, timeRecorded, fromSequence=True):
         boundingBoxes = self.formatBoundingBoxData(boundingBoxes, fromSequence)  # format bounding box data
 
@@ -267,10 +345,18 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
             # If annotation exists for a given tool in the given frame, place markups in corresponding position of bounding box
             if classname in boundingBoxes:
                 boundingBox = boundingBoxes[classname]
-                markupNode.SetNthControlPointPosition(0, boundingBox[0][0], boundingBox[0][1], 0)  # bottom left
-                markupNode.SetNthControlPointPosition(1, boundingBox[1][0], boundingBox[1][1], 0)  # bottom right
-                markupNode.SetNthControlPointPosition(2, boundingBox[2][0], boundingBox[2][1], 0)  # top left
-                markupNode.SetNthControlPointPosition(3, boundingBox[3][0], boundingBox[3][1], 0)  # top right
+
+                # Compute average depth within bounding box
+                ROIPixels = self.extractROIPixelsAtTimestamp(float(timeRecorded), np.array(boundingBox).astype(np.int32))
+                averageRGB = self.getAverageRGBPixel(ROIPixels)
+                # print(f"Average colour at timestamp {str(timeRecorded)}: R={averageRGB[0]}, G={averageRGB[1]}, B={averageRGB[2]}")
+                depthValue = self.convertRGBToDepth(averageRGB)  # IN MM (might need to convert to image coordinate space later)
+
+                # Set markup points
+                markupNode.SetNthControlPointPosition(0, boundingBox[0][0], boundingBox[0][1], depthValue)
+                markupNode.SetNthControlPointPosition(1, boundingBox[1][0], boundingBox[1][1], depthValue)
+                markupNode.SetNthControlPointPosition(2, boundingBox[2][0], boundingBox[2][1], depthValue)
+                markupNode.SetNthControlPointPosition(3, boundingBox[3][0], boundingBox[3][1], depthValue)
 
                 # Save position of markups at specific time in corresponding markups sequence
                 self.markupSequences[i].SetDataNodeAtValue(
@@ -306,15 +392,15 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
 
         for label in rawBoundingBoxes:
             formattedBoundingBoxes[label['class']] = [
-                (label['xmin'] * -1, label['ymax'] * -1),  # bottom left
-                (label['xmax'] * -1, label['ymax'] * -1),  # bottom right
-                (label['xmin'] * -1, label['ymin'] * -1),  # top left
-                (label['xmax'] * -1, label['ymin'] * -1),  # top right
+                [label['xmin'] * -1, label['ymax'] * -1],  # bottom left
+                [label['xmax'] * -1, label['ymax'] * -1],  # bottom right
+                [label['xmin'] * -1, label['ymin'] * -1],  # top left
+                [label['xmax'] * -1, label['ymin'] * -1],  # top right
             ] if fromSequence else [
-                (label['xmin'] * -1, label['ymax']),
-                (label['xmax'] * -1, label['ymax']),
-                (label['xmin'] * -1, label['ymin']),
-                (label['xmax'] * -1, label['ymin']),
+                [label['xmin'], label['ymax']],
+                [label['xmax'], label['ymax']],
+                [label['xmin'], label['ymin']],
+                [label['xmax'], label['ymin']],
             ]
 
         return formattedBoundingBoxes
@@ -377,19 +463,18 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
                 timeRecorded
             )
 
-    def generateUsingExistingFile(self, RGBImageDirectory, slicerFileDirectory):
-        # Load slicer scene
-        try:
-            slicer.util.loadNodesFromFile(slicerFileDirectory)
-        except:
-            print("Error loading slicer file.")
+    def generateUsingExistingSequenceBrowser(self, RGBImageDirectory, sequenceBrowser, depthImageSequenceNode):
+        # Set sequence browser
+        self.sequenceBrowser = sequenceBrowser
+        self.depthImageSequenceNode = depthImageSequenceNode
 
+        # Create markup nodes with sequences
         self.addMarkupNodeWithSequence("ULTRASOUND")
 
-        # Get sequence browser (assuming a sequence browser named 'Recording' exists)
-        sequenceBrowser = slicer.mrmlScene.GetFirstNodeByName("Recording")
+        # Add markup sequences to selected sequence browser
+        # sequenceBrowser = slicer.mrmlScene.GetFirstNodeByName("Recording")
         for markupsSequence in self.markupSequences:
-            sequenceBrowser.AddSynchronizedSequenceNode(markupsSequence)
+            self.sequenceBrowser.AddSynchronizedSequenceNode(markupsSequence)
 
         # Read label file from csv
         RGBLabelFile = pandas.read_csv(self.getLabelFilePathFromDirectory(RGBImageDirectory))
