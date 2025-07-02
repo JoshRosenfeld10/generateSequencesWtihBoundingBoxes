@@ -263,25 +263,39 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         )
         slicer.mrmlScene.RemoveNode(imageVol)
 
+    def binarySearchTimestamp(self, numberOfFrames, targetTimestamp):
+        low = 0
+        high = numberOfFrames
+        bestIndex = -1
+
+        while low <= high:
+            mid = (low + high) // 2
+            timestamp = float(self.depthImageSequenceNode.GetNthIndexValue(mid))
+            if timestamp == targetTimestamp:
+                return mid
+            elif timestamp < targetTimestamp:
+                bestIndex = mid
+                low = mid + 1
+            else:
+                high = mid - 1
+
+        return bestIndex
+
+    def extractROIFromVTK(self, imageData, xmin, xmax, ymin, ymax, z = 0):
+        extractor = vtk.vtkExtractVOI()
+        extractor.SetInputData(imageData)
+        extractor.SetVOI(xmin, xmax - 1, ymin, ymax - 1, z, z)
+        extractor.Update()
+
+        roiImageData = extractor.GetOutput()
+        return roiImageData
+
     def extractROIPixelsAtTimestamp(self, targetTimestamp, quad):
         # Find appropriate frame index (<= timestamp)
         numberOfFrames = self.depthImageSequenceNode.GetNumberOfDataNodes()
-        matchedFrameIndex = None
-
-        for i in range(numberOfFrames):
-            timestampStr = self.depthImageSequenceNode.GetNthIndexValue(i)
-            try:
-                timestamp = float(timestampStr)
-            except ValueError:
-                continue
-
-            if timestamp <= targetTimestamp:
-                matchedFrameIndex = i
-            else:
-                break
-
-        if matchedFrameIndex is None:
-            raise ValueError(f"No frame found with timestamp <= target timestamp {targetTimestamp}")
+        matchedFrameIndex = self.binarySearchTimestamp(numberOfFrames, targetTimestamp)
+        if matchedFrameIndex < 0:
+            raise ValueError(f"No frame found with timestamp <= {targetTimestamp}")
 
         # Extract image at closest timestamp
         self.sequenceBrowser.SetSelectedItemNumber(matchedFrameIndex)
@@ -289,16 +303,16 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
             self.depthImageSequenceNode.GetNthIndexValue(matchedFrameIndex)
         )
         imageData = frameVolumeNode.GetImageData()
-        dims = imageData.GetDimensions()
-        scalars = imageData.GetPointData().GetScalars()
+        xcoords, ycoords = quad[:, 0], quad[:, 1]
+        xmin, xmax = np.min(xcoords), np.max(xcoords)
+        ymin, ymax = np.min(ycoords), np.max(ycoords)
+        roiImageData = self.extractROIFromVTK(imageData, xmin, xmax, ymin, ymax)  # get ROI (bounding box) pixels from vtk data
+
+        # Convert to ROI image data to numpy
+        dims = roiImageData.GetDimensions()
+        scalars = roiImageData.GetPointData().GetScalars()
         npImage = numpy_support.vtk_to_numpy(scalars).reshape(dims[1], dims[0], -1)  # shape: (rows, cols, channels)
-
-        # Create binary mask from bounding box polygon
-        mask = np.zeros((dims[1], dims[0]), dtype=np.uint8)  # shape: rows, cols
-        cv2.fillPoly(mask, [quad], 1)
-
-        # Return RGB pixel values within mask
-        return npImage[mask == 1]
+        return npImage
 
     def getAverageRGBPixel(self, pixels):
         return pixels.mean(axis=0).astype(np.uint8)
@@ -335,6 +349,13 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
                 depthValue = ((1.0 / disp_value) / 1000 + 0.5)
         return depthValue
 
+    def computeAverageDepthFromROI(self, npImage, downsampleFactor = 20):
+        # TODO: Make downsampling variable based on size of bounding box
+        downsampled = npImage[::downsampleFactor, ::downsampleFactor]  # shape: (rows, cols, 3)
+        pixels = downsampled.reshape(-1, 3)  # flatten to (N, 3)
+        depths = [self.convertRGBToDepth(pixel.tolist()) for pixel in pixels]
+        return np.mean(depths)
+
     def loadBoundingBoxes(self, boundingBoxes, timeRecorded, fromSequence=True):
         boundingBoxes = self.formatBoundingBoxData(boundingBoxes, fromSequence)  # format bounding box data
 
@@ -348,9 +369,7 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
 
                 # Compute average depth within bounding box
                 ROIPixels = self.extractROIPixelsAtTimestamp(float(timeRecorded), np.array(boundingBox).astype(np.int32))
-                averageRGB = self.getAverageRGBPixel(ROIPixels)
-                # print(f"Average colour at timestamp {str(timeRecorded)}: R={averageRGB[0]}, G={averageRGB[1]}, B={averageRGB[2]}")
-                depthValue = self.convertRGBToDepth(averageRGB)  # IN MM (might need to convert to image coordinate space later)
+                depthValue = self.computeAverageDepthFromROI(ROIPixels)
 
                 # Set markup points
                 markupNode.SetNthControlPointPosition(0, boundingBox[0][0], boundingBox[0][1], depthValue)
@@ -397,10 +416,10 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
                 [label['xmin'] * -1, label['ymin'] * -1],  # top left
                 [label['xmax'] * -1, label['ymin'] * -1],  # top right
             ] if fromSequence else [
-                [label['xmin'], label['ymax']],
-                [label['xmax'], label['ymax']],
-                [label['xmin'], label['ymin']],
-                [label['xmax'], label['ymin']],
+                [label['xmin'], label['ymax']],  # top left
+                [label['xmax'], label['ymax']],  # top right
+                [label['xmin'], label['ymin']],  # bottom left
+                [label['xmax'], label['ymin']],  # bottom right
             ]
 
         return formattedBoundingBoxes
