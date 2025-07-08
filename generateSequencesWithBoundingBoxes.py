@@ -489,9 +489,9 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
 
         # Create markup nodes with sequences
         self.addMarkupNodeWithSequence("ULTRASOUND")
+        # self.addMarkupNodeWithSequence("PHANTOM")
 
         # Add markup sequences to selected sequence browser
-        # sequenceBrowser = slicer.mrmlScene.GetFirstNodeByName("Recording")
         for markupsSequence in self.markupSequences:
             self.sequenceBrowser.AddSynchronizedSequenceNode(markupsSequence)
 
