@@ -1,0 +1,22 @@
+{
+    "network type": "YOLOv8",
+    "model name": "Central_Line_First_Try_Fold_1",
+    "inputs": [
+        {
+            "message type": "IMAGE",
+            "data node": "ImageRGB_ImageRGB",
+            "node type": "vtkMRMLStreamingVolumeNode"
+        }
+    ],
+    "outputs": [
+        {
+            "message type": "STRING",
+            "data node": "PredictedBoundingBox",
+            "node type": "vtkMRMLTextNode"
+        }
+    ],
+    "incoming hostname": "localhost",
+    "incoming port": "18944",
+    "outgoing hostname": "localhost",
+    "outgoing port": "18954"
+}
