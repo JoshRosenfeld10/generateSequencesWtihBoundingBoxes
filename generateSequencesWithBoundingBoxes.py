@@ -4,7 +4,8 @@ from typing import Annotated, Optional
 
 import numpy as np
 import slicer
-import scipy
+import qt
+import json
 import cv2
 from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
@@ -94,10 +95,21 @@ class generateSequencesWithBoundingBoxesWidget(ScriptedLoadableModuleWidget, VTK
         uiWidget.setMRMLScene(slicer.mrmlScene)
         self.ui.sequenceBrowserNode.setMRMLScene(slicer.mrmlScene)
         self.ui.depthImageSequenceNode.setMRMLScene(slicer.mrmlScene)
+        self.ui.nodeToPredict.setMRMLScene(slicer.mrmlScene)
 
         # Create logic class. Logic implements all computations that should be possible to run
         # in batch mode, without a graphical user interface.
         self.logic = generateSequencesWithBoundingBoxesLogic()
+
+        # Setup combo box options
+        self.ui.modelType.clear()
+        self.ui.modelType.addItems(["Select network type"])
+        networks = os.listdir(self.ui.networkDirectory.directory)
+        networks = [x for x in networks if not '.' in x]
+        self.ui.modelType.addItems(networks)
+
+        self.ui.trainedInstance.clear()
+        self.ui.trainedInstance.addItems(["Select model"])
 
         # Connections
 
@@ -108,8 +120,27 @@ class generateSequencesWithBoundingBoxesWidget(ScriptedLoadableModuleWidget, VTK
                          slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
 
         # Buttons
-        self.ui.generateSequenceButton.connect(
-            'clicked(bool)', self.onGenerateSequenceButton)
+        self.ui.generateWithAnnotationsButton.connect(
+            'clicked(bool)', self.onGenerateWithAnnotationsButton)
+        self.ui.generateWithModelButton.connect(
+            'clicked(bool)', self.onGenerateWithModelButton)
+
+        # Collapsible widgets
+        self.ui.GenerateWithAnnotationDataCollapsibleButton.connect(
+            'clicked(bool)', self.onGenerateWithAnnotationDataCollapsibleButton
+        )
+        self.ui.GenerateWithAICollapsibleButton.connect(
+            'clicked(bool)', self.onGenerateWithAICollapsibleButton
+        )
+
+        # Combo box connections
+        self.ui.networkDirectory.connect('directorySelected(QString)', self.onNetworkDirectorySelected)
+        self.ui.modelType.connect('currentIndexChanged(int)', self.onModelTypeSelected)
+
+        # Settings object
+        self.settings = qt.QSettings()
+        self.restoreUiFromSettings()
+        qt.QApplication.instance().aboutToQuit.connect(self.saveUiToSettings)
 
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
@@ -119,6 +150,70 @@ class generateSequencesWithBoundingBoxesWidget(ScriptedLoadableModuleWidget, VTK
         Called when the application closes and the module widget is destroyed.
         """
         self.removeObservers()
+        self.saveUiToSettings()
+
+    def settingsKey(self, key):
+        return f"{self.moduleName}/{key}"
+
+    def saveUiToSettings(self):
+        depthImageSequenceNode = self.ui.depthImageSequenceNode.currentNode()
+        self.settings.setValue(
+            self.settingsKey("depthImageSequenceNode"),
+            depthImageSequenceNode.GetID() if depthImageSequenceNode else ""  # must save ID and not node pointer
+        )
+
+        self.settings.setValue(
+            self.settingsKey("networkDirectory"),
+            self.ui.networkDirectory.directory if self.ui.networkDirectory.directory else ""
+        )
+
+        self.settings.setValue(
+            self.settingsKey("modelType"),
+            self.ui.modelType.currentIndex
+        )
+
+        self.settings.setValue(
+            self.settingsKey("trainedInstance"),
+            self.ui.trainedInstance.currentIndex
+        )
+
+        nodeToPredict = self.ui.nodeToPredict.currentNode()
+        self.settings.setValue(
+            self.settingsKey("nodeToPredict"),
+            nodeToPredict.GetID() if nodeToPredict else ""
+        )
+
+        self.settings.sync()
+
+    def restoreUiFromSettings(self):
+        if self.settings.contains(self.settingsKey("depthImageSequenceNode")):
+            depthImageSequenceNodeId = self.settings.value(self.settingsKey("depthImageSequenceNode"))
+            if depthImageSequenceNodeId:
+                self.ui.depthImageSequenceNode.setCurrentNode(
+                    slicer.mrmlScene.GetNodeByID(depthImageSequenceNodeId)
+                )
+
+        if self.settings.contains(self.settingsKey("networkDirectory")):
+            networkDirectory = self.settings.value(self.settingsKey("networkDirectory"))
+            if networkDirectory:
+                self.ui.networkDirectory.directory = networkDirectory
+
+        if self.settings.contains(self.settingsKey("modelType")):
+            self.ui.modelType.setCurrentIndex(
+                int(self.settings.value(self.settingsKey("modelType")))
+            )
+
+        if self.settings.contains(self.settingsKey("trainedInstance")):
+            self.ui.trainedInstance.setCurrentIndex(
+                int(self.settings.value(self.settingsKey("trainedInstance")))
+            )
+
+        if self.settings.contains(self.settingsKey("nodeToPredict")):
+            nodeToPredictId = self.settings.value(self.settingsKey("nodeToPredict"))
+            if nodeToPredictId:
+                self.ui.nodeToPredict.setCurrentNode(
+                    slicer.mrmlScene.GetNodeByID(nodeToPredictId)
+                )
 
     def enter(self) -> None:
         """
@@ -174,18 +269,59 @@ class generateSequencesWithBoundingBoxesWidget(ScriptedLoadableModuleWidget, VTK
             # ui element that needs connection.
             self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
 
-    def onGenerateSequenceButton(self) -> None:
-        if self.ui.checkBox.checked:
-            self.logic.generateUsingExistingSequenceBrowser(
-                self.ui.RGBImageDirectoryButton.directory,
-                self.ui.sequenceBrowserNode.currentNode(),
-                self.ui.depthImageSequenceNode.currentNode()
-            )
-        else:
-            self.logic.generateSequence(
-                self.ui.RGBImageDirectoryButton.directory,
-                self.ui.depthImageDirectoryButton.directory
-            )
+    def onNetworkDirectorySelected(self):
+        wasBlocking = self.ui.modelType.blockSignals(True)
+        currentItems = self.ui.modelType.count
+        for i in range(currentItems, -1, -1):
+            self.ui.modelType.removeItem(i)
+        networks = os.listdir(self.ui.networkDirectory.directory)
+        networks = [x for x in networks if not '.' in x and x[0] != '_']
+        networks = ["Select network type"] + networks
+        self.ui.modelType.addItems(networks)
+        self.ui.modelType.blockSignals(wasBlocking)
+
+    def onModelTypeSelected(self):
+        wasBlocking = self.ui.trainedInstance.blockSignals(True)
+        currentItems = self.ui.trainedInstance.count
+        for i in range(currentItems, -1, -1):
+            self.ui.trainedInstance.removeItem(i)
+        self.ui.trainedInstance.addItem("Select model")
+        if self.ui.modelType.currentText != "Select network type":
+            networks = os.listdir(os.path.join(
+                self.ui.networkDirectory.directory,
+                self.ui.modelType.currentText
+            ))
+            networks = [x for x in networks if not '.' in x and "pycache" not in x]
+            self.ui.trainedInstance.addItems(networks)
+        self.ui.trainedInstance.blockSignals(wasBlocking)
+
+    def onGenerateWithAnnotationDataCollapsibleButton(self) -> None:
+        self.ui.GenerateWithAICollapsibleButton.collapsed = True
+
+    def onGenerateWithAICollapsibleButton(self) -> None:
+        self.ui.GenerateWithAnnotationDataCollapsibleButton.collapsed = True
+
+    def onGenerateWithAnnotationsButton(self) -> None:
+        _, extension = os.path.splitext(self.ui.labelFilePath.currentPath)
+        if extension != ".csv":
+            print("Invalid label file path. Please select a file with a .csv extension.")
+            return
+
+        self.logic.generateUsingExistingSequenceBrowser(
+            self.ui.labelFilePath.currentPath,
+            self.ui.sequenceBrowserNode.currentNode(),
+            self.ui.depthImageSequenceNode.currentNode()
+        )
+
+    def onGenerateWithModelButton(self) -> None:
+        self.logic.generateUsingAIPrediction(
+            self.ui.networkDirectory.directory,
+            self.ui.modelType.currentText,
+            self.ui.trainedInstance.currentText,
+            self.ui.nodeToPredict.currentNode(),
+            self.ui.sequenceBrowserNode.currentNode(),
+            self.ui.depthImageSequenceNode.currentNode()
+        )
 
 
 #
@@ -208,8 +344,19 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         self.sequenceBrowser = None
         self.depthImageSequenceNode = None
 
+        self.CONFIG = "yolo_central_line_config.json"
+        self.configFilePath = self.getConfigFilePath()
+
+        self.liveAIPredictionModuleLogic = None
+        self.textOuputNodeName = "PredictedBoundingBox"
+
     def getParameterNode(self):
         return generateSequencesWithBoundingBoxesParameterNode(super().getParameterNode())
+
+    def getConfigFilePath(self):
+        modulePath = slicer.util.getModule("generateSequencesWithBoundingBoxes").path
+        moduleDirectory = os.path.dirname(modulePath)
+        return os.path.join(moduleDirectory, self.CONFIG)
 
     def addImageNodeWithSequence(self, classname: str):
         # Create image node
@@ -356,8 +503,8 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         depths = [self.convertRGBToDepth(pixel.tolist()) for pixel in pixels]
         return np.mean(depths)
 
-    def loadBoundingBoxes(self, boundingBoxes, timeRecorded, fromSequence=True):
-        boundingBoxes = self.formatBoundingBoxData(boundingBoxes, fromSequence)  # format bounding box data
+    def loadBoundingBoxes(self, boundingBoxes, timeRecorded):
+        boundingBoxes = self.formatBoundingBoxData(boundingBoxes)  # format bounding box data
 
         # Loop through all markup nodes
         for i, markupNode in enumerate(self.markupNodes):
@@ -404,22 +551,16 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
                     self.markupSequences[i].SetDataNodeAtValue(
                         markupNode, str(timeRecorded))
 
-
-    def formatBoundingBoxData(self, rawBoundingBoxes, fromSequence: bool):
+    def formatBoundingBoxData(self, rawBoundingBoxes):
         rawBoundingBoxes = eval(rawBoundingBoxes)  # evaluate string to convert to list of dictionaries
         formattedBoundingBoxes = {}
 
         for label in rawBoundingBoxes:
             formattedBoundingBoxes[label['class']] = [
-                [label['xmin'] * -1, label['ymax'] * -1],  # bottom left
-                [label['xmax'] * -1, label['ymax'] * -1],  # bottom right
-                [label['xmin'] * -1, label['ymin'] * -1],  # top left
-                [label['xmax'] * -1, label['ymin'] * -1],  # top right
-            ] if fromSequence else [
-                [label['xmin'], label['ymax']],  # top left
-                [label['xmax'], label['ymax']],  # top right
-                [label['xmin'], label['ymin']],  # bottom left
-                [label['xmax'], label['ymin']],  # bottom right
+                [int(label['xmin']), int(label['ymax'])],  # top left
+                [int(label['xmax']), int(label['ymax'])],  # top right
+                [int(label['xmin']), int(label['ymin'])],  # bottom left
+                [int(label['xmax']), int(label['ymin'])],  # bottom right
             ]
 
         return formattedBoundingBoxes
@@ -432,57 +573,78 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
             directory, "{}_{}_Labels.csv".format(videoId, subtype)
         )
 
-    def generateSequence(self, RGBImageDirectory, depthImageDirectory):
+    def modifyConfigFile(self, modelType, trainedInstance, nodeToPredict):
+        # Create config JSON file if it doesn't exist
+        try:
+            with open(self.configFilePath, 'x') as file:
+                json.dump(
+                    {
+                        "network type": "", "model name": "", "inputs": [],
+                        "outputs": [
+                        {"message type": "STRING", "data node": str(self.textOuputNodeName), "node type": "vtkMRMLTextNode"}],
+                        "incoming hostname": "localhost", "incoming port": "18944", "outgoing hostname": "localhost",
+                        "outgoing port": "18945"
+                    },
+                    file,
+                    indent=4
+                )
+        except FileExistsError:
+            pass  # File already exists
 
-        # Create image and markup nodes
-        self.addImageNodeWithSequence("RGB")
-        self.addImageNodeWithSequence("DEPTH")
-        self.addMarkupNodeWithSequence("ULTRASOUND")
-        self.addMarkupNodeWithSequence("PHANTOM")
-        self.addMarkupNodeWithSequence("SYRINGE")
+        # Open config
+        with open(self.configFilePath, 'r') as file:
+            configData = json.load(file)
 
-        # Create sequences node
-        self.createSequenceBrowser(0)
+        # Modify data
+        configData["network type"] = modelType
+        configData["model name"] = trainedInstance
+        configData["inputs"] = [
+            {
+                "message type": "IMAGE",
+                "data node": str(nodeToPredict.GetName()),
+                "node type": str(nodeToPredict.GetClassName())
+            }
+        ]
 
-        # Read label file from csv
-        RGBLabelFile = pandas.read_csv(self.getLabelFilePathFromDirectory(RGBImageDirectory))
-        depthLabelFile = pandas.read_csv(self.getLabelFilePathFromDirectory(depthImageDirectory))
+        # Write back to JSON file
+        with open(self.configFilePath, 'w') as file:
+            json.dump(configData, file, indent=4)
 
-        # Loop through each frame of RGB images
-        for i in RGBLabelFile.index:
+        print("Successfully modified config file")
 
-            # Retrieve data from each frame
-            imgFilename = RGBLabelFile["FileName"][i]
-            timeRecorded = RGBLabelFile["Time Recorded"][i]
-            bboxes = RGBLabelFile["Tool bounding box"][i]
+    def predictBoundingBoxes(self, networkDirectory, modelType, trainedInstance):
+        self.sequenceBrowser.SetSelectedItemNumber(0)  # go to first frame
 
-            # Load image
-            self.loadImageVolume(
-                self.imageNodes[0],
-                self.imageSequences[0],
-                os.path.join(RGBImageDirectory, imgFilename),
-                timeRecorded
-            )
+        # Create text node output if it does not already exist
+        textOutputNode = slicer.util.getFirstNodeByName(self.textOuputNodeName)
+        if textOutputNode is None:
+            slicer.mrmlScene.AddNewNodeByClass("vtkMRMLTextNode", self.textOuputNodeName)
 
-            # Load bounding box data
-            self.loadBoundingBoxes(bboxes, timeRecorded, True)
+        # Load configuration data
+        configuration = self.liveAIPredictionModuleLogic.loadConfigurationFromFile(self.configFilePath)
 
-        # Loop through each frame of depth images
-        for i in depthLabelFile.index:
+        # Start neural network
+        self.liveAIPredictionModuleLogic.setNetworkPath(os.path.join(
+            networkDirectory, modelType, trainedInstance
+        ))
+        self.liveAIPredictionModuleLogic.startNeuralNetwork(configuration)
 
-            # Retrieve data from each frame
-            imgFilename = depthLabelFile["FileName"][i]
-            timeRecorded = depthLabelFile["Time Recorded"][i]
+        for i in range(self.sequenceBrowser.GetNumberOfItems()):
+            self.sequenceBrowser.SetSelectedItemNumber(i)
+            slicer.app.processEvents()  # keep UI responsive (necessary for neural network)
 
-            # Load image
-            self.loadImageVolume(
-                self.imageNodes[1],
-                self.imageSequences[1],
-                os.path.join(depthImageDirectory, imgFilename),
-                timeRecorded
-            )
+            # Get bounding box data of current frame
+            predictedBoundingBoxes = slicer.util.getNode(self.textOuputNodeName).GetText()  # list of dictionaries (as a string)
+            timestamp = float(self.sequenceBrowser.GetMasterSequenceNode().GetNthIndexValue(i))
 
-    def generateUsingExistingSequenceBrowser(self, RGBImageDirectory, sequenceBrowser, depthImageSequenceNode):
+            # Place bounding boxes in scene
+            if predictedBoundingBoxes:
+                self.loadBoundingBoxes(predictedBoundingBoxes, timestamp)
+
+        # Stop neural network
+        self.liveAIPredictionModuleLogic.stopNeuralNetwork()
+
+    def generateUsingExistingSequenceBrowser(self, labelFilePath, sequenceBrowser, depthImageSequenceNode):
         # Set sequence browser
         self.sequenceBrowser = sequenceBrowser
         self.depthImageSequenceNode = depthImageSequenceNode
@@ -496,7 +658,7 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
             self.sequenceBrowser.AddSynchronizedSequenceNode(markupsSequence)
 
         # Read label file from csv
-        RGBLabelFile = pandas.read_csv(self.getLabelFilePathFromDirectory(RGBImageDirectory))
+        RGBLabelFile = pandas.read_csv(labelFilePath)
 
         # Loop through each frame of RGB images
         for i in RGBLabelFile.index:
@@ -506,7 +668,31 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
             bboxes = RGBLabelFile["Tool bounding box"][i]
 
             # Load bounding box data
-            self.loadBoundingBoxes(bboxes, timeRecorded, False)
+            self.loadBoundingBoxes(bboxes, timeRecorded)
+
+    def generateUsingAIPrediction(self, networkDirectory, modelType, trainedInstance, imageNodeToPredict, sequenceBrowser, depthImageSequenceNode):
+        # Set sequence browser
+        self.sequenceBrowser = sequenceBrowser
+        self.depthImageSequenceNode = depthImageSequenceNode
+
+        try:
+            self.liveAIPredictionModuleLogic = slicer.util.getModuleLogic("LiveAIPrediction")
+        except:
+            print("LiveAIPrediction module not found. Please make sure it is installed and try again.")
+            return
+
+        # Modify config file for LiveAIPrediction module
+        self.modifyConfigFile(modelType, trainedInstance, imageNodeToPredict)
+
+        # Create markup nodes with sequences
+        self.addMarkupNodeWithSequence("PHANTOM")
+
+        # Add markup sequences to selected sequence browser
+        for markupsSequence in self.markupSequences:
+            self.sequenceBrowser.AddSynchronizedSequenceNode(markupsSequence)
+
+        # Predict using neural network
+        self.predictBoundingBoxes(networkDirectory, modelType, trainedInstance)
 
 
 #
