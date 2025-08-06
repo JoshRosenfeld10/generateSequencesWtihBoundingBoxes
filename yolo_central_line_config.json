@@ -1,6 +1,6 @@
 {
     "network type": "YOLOv8",
-    "model name": "Central_Line_First_Try_Fold_1",
+    "model name": "Central_Line_First_Try_Fold_0",
     "inputs": [
         {
             "message type": "IMAGE",

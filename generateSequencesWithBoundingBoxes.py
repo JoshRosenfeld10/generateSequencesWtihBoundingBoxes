@@ -685,7 +685,8 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
         self.modifyConfigFile(modelType, trainedInstance, imageNodeToPredict)
 
         # Create markup nodes with sequences
-        self.addMarkupNodeWithSequence("PHANTOM")
+        self.addMarkupNodeWithSequence("ULTRASOUND")
+        self.addMarkupNodeWithSequence("SYRINGE")
 
         # Add markup sequences to selected sequence browser
         for markupsSequence in self.markupSequences:
