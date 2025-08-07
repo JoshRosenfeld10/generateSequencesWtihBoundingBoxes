@@ -496,6 +496,11 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
                 depthValue = ((1.0 / disp_value) / 1000 + 0.5)
         return depthValue
 
+    def convertPixelsToMM(self, xPixel, yPixel, zMM, principlePt=[314.273, 251.183], focalLength=592.667):
+        xMM = (xPixel - principlePt[0]) * zMM / focalLength
+        yMM = (yPixel - principlePt[1]) * zMM / focalLength
+        return [xMM, yMM]
+
     def computeAverageDepthFromROI(self, npImage, downsampleFactor = 20):
         # TODO: Make downsampling variable based on size of bounding box
         downsampled = npImage[::downsampleFactor, ::downsampleFactor]  # shape: (rows, cols, 3)
@@ -518,11 +523,17 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
                 ROIPixels = self.extractROIPixelsAtTimestamp(float(timeRecorded), np.array(boundingBox).astype(np.int32))
                 depthValue = self.computeAverageDepthFromROI(ROIPixels)
 
+                # Convert x and y coordinates from pixels to mm
+                topLeftMM = self.convertPixelsToMM(boundingBox[0][0], boundingBox[0][1], depthValue)
+                topRightMM = self.convertPixelsToMM(boundingBox[1][0], boundingBox[1][1], depthValue)
+                bottomLeftMM = self.convertPixelsToMM(boundingBox[2][0], boundingBox[2][1], depthValue)
+                bottomRightMM = self.convertPixelsToMM(boundingBox[3][0], boundingBox[3][1], depthValue)
+
                 # Set markup points
-                markupNode.SetNthControlPointPosition(0, boundingBox[0][0], boundingBox[0][1], depthValue)
-                markupNode.SetNthControlPointPosition(1, boundingBox[1][0], boundingBox[1][1], depthValue)
-                markupNode.SetNthControlPointPosition(2, boundingBox[2][0], boundingBox[2][1], depthValue)
-                markupNode.SetNthControlPointPosition(3, boundingBox[3][0], boundingBox[3][1], depthValue)
+                markupNode.SetNthControlPointPosition(0, topLeftMM[0], topLeftMM[1], depthValue)
+                markupNode.SetNthControlPointPosition(1, topRightMM[0], topRightMM[1], depthValue)
+                markupNode.SetNthControlPointPosition(2, bottomLeftMM[0], bottomLeftMM[1], depthValue)
+                markupNode.SetNthControlPointPosition(3, bottomRightMM[0], bottomRightMM[1], depthValue)
 
                 # Save position of markups at specific time in corresponding markups sequence
                 self.markupSequences[i].SetDataNodeAtValue(
@@ -651,6 +662,7 @@ class generateSequencesWithBoundingBoxesLogic(ScriptedLoadableModuleLogic):
 
         # Create markup nodes with sequences
         self.addMarkupNodeWithSequence("ULTRASOUND")
+        # self.addMarkupNodeWithSequence("SYRINGE")
         # self.addMarkupNodeWithSequence("PHANTOM")
 
         # Add markup sequences to selected sequence browser
